@@ -733,8 +733,8 @@ PLL_C PLL_C_inst (.inclk0(M_CLK), .c0(CMCLK), .c1(CBCLK), .c2(CLRCLK), .locked()
 //PLL_IF PLL_IF_inst (.inclk0(ADC1_CLK), .c3(C77_76_clk), .locked(IF_locked));
 
 // Generate 155.52MHz clock for transmitter (C155_52_clk), 1. for DC-DC syncronization (SYNC)
-
-PLL PLL_main (.inclk0(M_CLK),	.c0(C155_52_clk), .c1(C77_76_clk), /*.c2(SYNC),*/ .c3(DACD_clock), .locked(IF_locked));
+wire PD_CLK;
+PLL PLL_main (.inclk0(M_CLK),	.c0(C155_52_clk), .c1(C77_76_clk), .c2(PD_CLK), .c3(DACD_clock), .locked(IF_locked));
 
 assign SYNC = 1'b0;
 
@@ -1419,8 +1419,21 @@ sidetone sidetone_inst( .clock(CLRCLK), .enable(sidetone), .tone_freq(tone_freq)
  
 */
 
+reg [13:0] reg_ADC[0:1];
 reg [13:0] temp_ADC[0:1];
 reg [13:0] temp_DACD;
+
+always @ (posedge C155_52_clk) 
+begin 
+   if(ADC1_CLK)reg_ADC[0] <= ADC1;  	
+	if(ADC2_CLK)reg_ADC[1] <= ADC2;
+end 
+
+always @ (posedge C77_76_clk) 
+begin 
+   temp_ADC[0] <= reg_ADC[0];  // not set so just copy data	 	
+	temp_ADC[1] <= reg_ADC[1];
+end 
 
 always @ (posedge C155_52_clk)
    if(C77_76_clk)temp_DACD <= Tx1_DAC_data;
@@ -1450,11 +1463,7 @@ always @ (posedge C155_52_clk)
 // 	temp_ADC[1] <= lfsr[0] ? 14'h0001 : 14'h3FFF;//ADC2;
 // end
 
-always @ (posedge C77_76_clk) 
-begin 
-   temp_ADC[0] <= ADC1;  // not set so just copy data	 	
-	temp_ADC[1] <= ADC2;
-end 
+
 
 
 
@@ -1487,12 +1496,12 @@ generate
   for (c = 0; c < NR; c++) 
    begin: MDC 
 	
-	// Move RxADC[n] to C122 clock domain
+	// Move RxADC[n] to C77_76 clock domain
 	cdc_mcp #(2) ADC_select
 	(.a_rst(C77_76_rst), .a_clk(rx_clock), .a_data(RxADC[c]), .a_data_rdy(Rx_data_ready), .b_rst(C77_76_rst), .b_clk(C77_76_clk), .b_data(C77_76_RxADC[c]));
 
 
-	// Move Rx[n] sample rate to C122 clock domain
+	// Move Rx[n] sample rate to C77_76 clock domain
 	cdc_mcp #(16) S_rate
 	(.a_rst(C77_76_rst), .a_clk(rx_clock), .a_data(RxSampleRate[c]), .a_data_rdy(Rx_data_ready), .b_rst(C77_76_rst), .b_clk(C77_76_clk), .b_data(C77_76_SampleRate[c]));
 	
@@ -1501,17 +1510,17 @@ endgenerate
 
 always @ (posedge C77_76_clk) begin
     select_input_RX[0] <= C77_76_RxADC[0] == 2'd1 ? temp_ADC[1] : temp_ADC[0];
-    select_input_RX[1] <= C77_76_RxADC[1] == 2'd2 ? temp_DACD : (C77_76_RxADC[1] == 8'd1 ? temp_ADC[1] : temp_ADC[0]); 
+    select_input_RX[1] <= C77_76_RxADC[1] == 2'd2 ? temp_DACD : (C77_76_RxADC[1] == 2'd1 ? temp_ADC[1] : temp_ADC[0]); 
     select_input_RX[2] <= C77_76_RxADC[2] == 2'd1 ? temp_ADC[1] : temp_ADC[0]; 
     select_input_RX[3] <= C77_76_RxADC[3] == 2'd1 ? temp_ADC[1] : temp_ADC[0]; 
     
     power_ADC1 <= C77_76_EnableRx0_7[0] & (C77_76_RxADC[0] == 2'd0)
-                | C77_76_EnableRx0_7[1] & (C77_76_RxADC[1] == 2'd0)
+                | (C77_76_EnableRx0_7[1] | C77_76_SyncRx[0][1]) & (C77_76_RxADC[1] == 2'd0)
                 | C77_76_EnableRx0_7[2] & (C77_76_RxADC[2] == 2'd0)
                 | C77_76_EnableRx0_7[3] & (C77_76_RxADC[3] == 2'd0);
 
     power_ADC2 <= C77_76_EnableRx0_7[0] & (C77_76_RxADC[0] == 2'd1)
-                | C77_76_EnableRx0_7[1] & (C77_76_RxADC[1] == 2'd1)
+                | (C77_76_EnableRx0_7[1] | C77_76_SyncRx[0][1]) & (C77_76_RxADC[1] == 2'd1)
                 | C77_76_EnableRx0_7[2] & (C77_76_RxADC[2] == 2'd1)
                 | C77_76_EnableRx0_7[3] & (C77_76_RxADC[3] == 2'd1);
 
@@ -1520,7 +1529,7 @@ always @ (posedge C77_76_clk) begin
 //    select_input_RX[6] <= C77_76_RxADC[6] == 8'd1 ? temp_ADC[1] : temp_ADC[0]; 
 end
 
-// move Rx phase words to C122 clock domain
+// move Rx phase words to C155 clock domain
 cdc_sync #(32) Rx_freq0 
 (.siga(Rx_frequency[0]), .rstb(C155_rst), .clkb(C155_52_clk), .sigb(C155_frequency_HZ[0]));
 
@@ -1548,7 +1557,7 @@ wire [17:0] mix_data_Q[0:NR-1];
     mix2 #(.CALCTYPE(4)) mix2_inst0 (
       .clk(C77_76_clk),
       .clk_2x(C155_52_clk),
-      .rst(1'b0),
+      .rst(C155_rst),
       .phi0(C155_frequency_HZ[0]),
       .phi1(C155_frequency_HZ[1]),
       .adc0(select_input_RX[0]),
@@ -1562,7 +1571,7 @@ wire [17:0] mix_data_Q[0:NR-1];
 
 	receiver receiver_inst0(   
 	//control
-	.reset(fifo_clear || !C77_76_run || !C77_76_EnableRx0_7[0]),
+	.reset(fifo_clear || !C77_76_run),
 	.clock(C77_76_clk),
 	//input
 	.sample_rate(C77_76_SampleRate[0]),
@@ -1577,7 +1586,7 @@ wire [17:0] mix_data_Q[0:NR-1];
 
 	receiver receiver_inst1(   
 	//control
-	.reset(fifo_clear || !C77_76_run || !C77_76_EnableRx0_7[0]),
+	.reset(fifo_clear || !C77_76_run),
 	.clock(C77_76_clk),
 	//input
 	.sample_rate( C77_76_SampleRate[1]),
@@ -1593,7 +1602,7 @@ wire [17:0] mix_data_Q[0:NR-1];
     mix2 #(.CALCTYPE(4)) mix2_inst1 (
       .clk(C77_76_clk),
       .clk_2x(C155_52_clk),
-      .rst(1'b0),
+      .rst(C155_rst),
       .phi0(C155_frequency_HZ[2]),
       .phi1(C155_frequency_HZ[3]),
       .adc0(select_input_RX[2]),
@@ -2136,9 +2145,24 @@ debounce de_IO5	(.clean_pb(debounce_IO5),	.pb(!IO5), 		 .clk(CMCLK));
 
 
 //155.52MHz PLL
-assign REF_EN = 1'b1;
-MPLL PLL155_52M(M_CLK /*VCXO*/, REF_CLK /*reference*/, PD_POL /*PFD output polarity*/, PD_EN /*PFD output enable*/);
+//wire pll_on;
+//assign PD_POL = (pll_on & PD_CLK_REF) ^ PD_CLK;
+//assign PD_EN = 1'b0 ;
+//wire PD_CLK_REF;
+//Generate 400kHz from the 155.52MHz VCXO
+//PLL_10M PLL_10M_inst(.inclk0(REF_CLK),	.c0(PD_CLK_REF), .areset(!pll_on));
+//MPLL PLL155_52M(PLL400k_CLK /*VCXO*/, REF_CLK /*reference*/, pd_polarity /*PFD output polarity*/, pd_enable /*PFD output enable*/);
 
+
+wire pll_on;
+wire pd_out_pol;
+wire pd_out_en;
+assign PD_POL = pll_on ? pd_out_pol : PD_CLK;
+assign PD_EN = pll_on ? pd_out_en : 1'b0;
+wire PD_CLK_REF;
+PFD PFD_10M(PD_CLK /*osc*/, PD_CLK_REF /*reference*/, pd_out_pol /*PFD output polarity*/, pd_out_en /*PFD output enable*/);
+//Generate 400kHz from the 155.52MHz VCXO
+PLL_10M PLL_10M_inst(.inclk0(REF_CLK),	.c0(PD_CLK_REF), .areset(!pll_on));
 
 //-----------------------------------------------------------
 //  LED Control  
@@ -2176,16 +2200,19 @@ parameter fast_clock_half_second = 2_500_000; // at PHY rate (12.5MHz)
 
 // flash LED1 for ~ 0.2 second whenever the PHY receives (rgmii_rx_activ)
 Led_flash Flash_LED1(.clock(rx_clock), .signal(network_status[2]), .LED(DEBUG_LED1), .period(half_second)); 	
-//Led_flash Flash_LED1(.clock(C77_76_clk), .signal(C77_76_EnableRx0_7[1]), .LED(DEBUG_LED1), .period(fast_clock_half_second)); 	
+//Led_flash Flash_LED1(.clock(rx_clock), .signal(C77_76_EnableRx0_7[0]), .LED(DEBUG_LED1), .period(fast_clock_half_second)); 	
 
 // flash LED2 for ~ 0.2 second whenever the PHY transmits (rgmii_tx_active)
 Led_flash Flash_LED2(.clock(rx_clock), .signal(network_status[1]), .LED(DEBUG_LED2), .period(half_second)); 
+//Led_flash Flash_LED2(.clock(rx_clock), .signal(C77_76_EnableRx0_7[1]), .LED(DEBUG_LED2), .period(fast_clock_half_second)); 	
 
 // flash LED3 for ~0.2 seconds whenever ip_rx_enable ????
 Led_flash Flash_LED3(.clock(rx_clock), .signal(0), .LED(DEBUG_LED3), .period(half_second));
+//Led_flash Flash_LED3(.clock(rx_clock), .signal(C77_76_EnableRx0_7[2]), .LED(DEBUG_LED3), .period(fast_clock_half_second)); 	
 
 // flash LED4 for ~0.2 seconds whenever traffic to the boards MAC address is received 
 Led_flash Flash_LED4(.clock(rx_clock), .signal(network_status[0]), .LED(DEBUG_LED4), .period(half_second));
+//Led_flash Flash_LED4(.clock(rx_clock), .signal(C77_76_EnableRx0_7[3]), .LED(DEBUG_LED4), .period(fast_clock_half_second)); 	
 
 // flash LED7 for ~0.2 seconds whenever udp_rx_active
 Led_flash Flash_LED7(.clock(rx_clock), .signal(network_status[4]), .LED(DEBUG_LED7), .period(half_second));		// udp_rx_active
@@ -2268,7 +2295,7 @@ assign USEROUT = run ? Open_Collector[7:1] : 7'b0;
 MB_SPI_IO MB_SPI_IO_inst(.clock(CMCLK), 
                          .AIN1(AIN1), .AIN2(AIN2), .AIN3(AIN3), .AIN4(AIN4), .AIN5(AIN5), .AIN6(AIN6), 
                          .pk_detect_reset(pk_detect_reset), .pk_detect_ack(pk_detect_ack),
-                         .IO4(IO4), .dither_override(dither_override), 
+                         .IO4(IO4), .dither_override(dither_override), .reference_en(REF_EN), .pll_on(pll_on),
                          .enable(Alex_enable[0]), .Alex_data(SPI_Alex_data),
                          .leds( {Status_LED, DEBUG_LED7, DEBUG_LED6, DEBUG_LED5, DEBUG_LED4, DEBUG_LED3, DEBUG_LED2, DEBUG_LED1} ),
                          .OC(USEROUT), .DAC(Drive_Level),
